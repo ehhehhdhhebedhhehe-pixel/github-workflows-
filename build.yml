@@ -1,0 +1,82 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      uid:
+        description: 'UID client'
+        required: true
+      app_name:
+        description: 'Nama aplikasi'
+        required: true
+        default: 'App'
+      logo_base64:
+        description: 'Logo base64 opsional'
+        required: false
+        default: ''
+      callback_url:
+        description: 'URL callback VPS'
+        required: true
+      job_id:
+        description: 'Job ID'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Extract source
+        run: |
+          unzip -q skyline_repo.zip -d src
+          # Flatten jika ada subfolder
+          if [ $(ls src | wc -l) -eq 1 ]; then
+            mv src/$(ls src)/* src/ 2>/dev/null || true
+          fi
+          ls src/
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Inject UID
+        run: |
+          echo '{"uid":"${{ inputs.uid }}"}' > src/android/app/src/main/assets/uid.json
+          echo "✓ uid injected"
+
+      - name: Inject App Name
+        run: |
+          APP="${{ inputs.app_name }}"
+          sed -i "s|<string name=\"app_name\">.*</string>|<string name=\"app_name\">${APP}</string>|g" \
+            src/android/app/src/main/res/values/strings.xml
+          echo "✓ app_name: $APP"
+
+      - name: Inject Logo
+        if: ${{ inputs.logo_base64 != '' }}
+        run: |
+          echo "${{ inputs.logo_base64 }}" | base64 -d > src/sync.jpg
+          pip install Pillow -q
+          cd src && python3 generate_icons.py
+          echo "✓ logo injected"
+
+      - name: Build APK
+        run: |
+          cd src/android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Send APK ke VPS
+        run: |
+          APK=$(find src/android/app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "APK: $APK"
+          curl -X POST "${{ inputs.callback_url }}/builder/callback" \
+            -F "job_id=${{ inputs.job_id }}" \
+            -F "apk=@${APK}" \
+            --max-time 300
+          echo "✓ done"
